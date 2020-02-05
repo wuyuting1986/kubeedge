@@ -2,8 +2,10 @@ package app
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apiserver/pkg/util/term"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
@@ -14,6 +16,8 @@ import (
 	"github.com/kubeedge/kubeedge/cloud/pkg/cloudhub"
 	"github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller"
 	"github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller"
+	"github.com/kubeedge/kubeedge/pkg/apis/cloudcore/v1alpha1"
+	"github.com/kubeedge/kubeedge/pkg/apis/cloudcore/v1alpha1/validation"
 	"github.com/kubeedge/kubeedge/pkg/util/flag"
 	"github.com/kubeedge/kubeedge/pkg/version"
 	"github.com/kubeedge/kubeedge/pkg/version/verflag"
@@ -30,11 +34,30 @@ edge nodes and pods metadata so that the data can be targeted to a specific edge
 kubernetes controller which manages devices so that the device metadata/status date can be synced between edge and cloud.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			verflag.PrintAndExitIfRequested()
+			flag.PrintMinConfigAndExitIfRequested(v1alpha1.NewMinCloudCoreConfig())
+			flag.PrintDefaultConfigAndExitIfRequested(v1alpha1.NewDefaultCloudCoreConfig())
 			flag.PrintFlags(cmd.Flags())
+
+			if errs := opts.Validate(); len(errs) > 0 {
+				fmt.Fprintf(os.Stderr, "%v\n", utilerrors.NewAggregate(errs))
+				os.Exit(1)
+			}
+
+			config, err := opts.Config()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				os.Exit(1)
+			}
+
+			if errs := validation.ValidateCloudCoreConfiguration(config); len(errs) > 0 {
+				fmt.Fprintf(os.Stderr, "%v\n", errs)
+				os.Exit(1)
+			}
 
 			// To help debugging, immediately log version
 			klog.Infof("Version: %+v", version.Get())
-			registerModules()
+
+			registerModules(config)
 			// start all modules
 			core.Run()
 		},
@@ -42,6 +65,7 @@ kubernetes controller which manages devices so that the device metadata/status d
 	fs := cmd.Flags()
 	namedFs := opts.Flags()
 	verflag.AddFlags(namedFs.FlagSet("global"))
+	flag.AddFlags(namedFs.FlagSet("global"))
 	globalflag.AddGlobalFlags(namedFs.FlagSet("global"), cmd.Name())
 	for _, f := range namedFs.FlagSets {
 		fs.AddFlagSet(f)
@@ -63,8 +87,8 @@ kubernetes controller which manages devices so that the device metadata/status d
 }
 
 // registerModules register all the modules started in cloudcore
-func registerModules() {
-	cloudhub.Register()
-	edgecontroller.Register()
-	devicecontroller.Register()
+func registerModules(c *v1alpha1.CloudCoreConfig) {
+	cloudhub.Register(c.Modules.CloudHub, c.KubeAPIConfig)
+	edgecontroller.Register(c.Modules.EdgeController, c.KubeAPIConfig, "", false)
+	devicecontroller.Register(c.Modules.DeviceController, c.KubeAPIConfig)
 }

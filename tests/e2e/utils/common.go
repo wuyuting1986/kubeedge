@@ -279,7 +279,6 @@ func newPodObj(podName, imgUrl, nodeselector string) *v1.Pod {
 				{
 					Name:  "nginx",
 					Image: imgUrl,
-					Ports: []v1.ContainerPort{{HostPort: 80, ContainerPort: 80}},
 				},
 			},
 			NodeSelector: map[string]string{"disktype": nodeselector},
@@ -408,7 +407,7 @@ func PrintCombinedOutput(cmd *exec.Cmd) error {
 	Infof("===========> Executing: %s\n", strings.Join(cmd.Args, " "))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		Fatalf("CombinedOutput failed %v", err)
+		Infof("CombinedOutput failed %v", err)
 		return err
 	}
 	if len(output) > 0 {

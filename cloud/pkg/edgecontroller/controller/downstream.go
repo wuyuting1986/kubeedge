@@ -58,6 +58,7 @@ func (dc *DownstreamController) syncPod() {
 				continue
 			}
 			msg := model.NewMessage("")
+			msg.SetResourceVersion(pod.ResourceVersion)
 			resource, err := messagelayer.BuildResource(pod.Spec.NodeName, pod.Namespace, model.ResourceTypePod, pod.Name)
 			if err != nil {
 				klog.Warningf("built message resource failed with error: %s", err)
@@ -116,6 +117,7 @@ func (dc *DownstreamController) syncConfigMap() {
 			klog.Infof("there are %d nodes need to sync config map, operation: %s", len(nodes), e.Type)
 			for _, n := range nodes {
 				msg := model.NewMessage("")
+				msg.SetResourceVersion(configMap.ResourceVersion)
 				resource, err := messagelayer.BuildResource(n, configMap.Namespace, model.ResourceTypeConfigmap, configMap.Name)
 				if err != nil {
 					klog.Warningf("build message resource failed with error: %s", err)
@@ -166,6 +168,7 @@ func (dc *DownstreamController) syncSecret() {
 			klog.Infof("there are %d nodes need to sync secret, operation: %s", len(nodes), e.Type)
 			for _, n := range nodes {
 				msg := model.NewMessage("")
+				msg.SetResourceVersion(secret.ResourceVersion)
 				resource, err := messagelayer.BuildResource(n, secret.Namespace, model.ResourceTypeSecret, secret.Name)
 				if err != nil {
 					klog.Warningf("build message resource failed with error: %s", err)
@@ -308,6 +311,7 @@ func (dc *DownstreamController) syncService() {
 					return true
 				}
 				msg := model.NewMessage("")
+				msg.SetResourceVersion(svc.ResourceVersion)
 				resource, err := messagelayer.BuildResource(nodeName, svc.Namespace, common.ResourceTypeService, svc.Name)
 				if err != nil {
 					klog.Warningf("Built message resource failed with error: %v", err)
@@ -386,6 +390,7 @@ func (dc *DownstreamController) syncEndpoints() {
 						return true
 					}
 					msg := model.NewMessage("")
+					msg.SetResourceVersion(eps.ResourceVersion)
 					resource, err := messagelayer.BuildResource(nodeName, eps.Namespace, common.ResourceTypeEndpoints, eps.Name)
 					if err != nil {
 						klog.Warningf("Built message resource failed with error: %s", err)
@@ -468,10 +473,10 @@ func (dc *DownstreamController) initLocating() error {
 		dc.lc.UpdateEdgeNode(node.ObjectMeta.Name, status)
 	}
 
-	if !config.Get().EdgeSiteEnabled {
+	if !config.Get().EdgeSiteEnable {
 		pods, err = dc.kubeClient.CoreV1().Pods(v1.NamespaceAll).List(metav1.ListOptions{})
 	} else {
-		selector := fields.OneTermEqualSelector("spec.nodeName", config.Get().KubeNodeName).String()
+		selector := fields.OneTermEqualSelector("spec.nodeName", config.Get().NodeName).String()
 		pods, err = dc.kubeClient.CoreV1().Pods(v1.NamespaceAll).List(metav1.ListOptions{FieldSelector: selector})
 	}
 	if err != nil {
@@ -497,11 +502,11 @@ func NewDownstreamController() (*DownstreamController, error) {
 	}
 
 	var nodeName = ""
-	if config.Get().EdgeSiteEnabled {
-		if config.Get().KubeNodeName == "" {
+	if config.Get().EdgeSiteEnable {
+		if config.Get().NodeName == "" {
 			return nil, fmt.Errorf("kubeEdge node name is not provided in edgesite controller configuration")
 		}
-		nodeName = config.Get().KubeNodeName
+		nodeName = config.Get().NodeName
 	}
 
 	podManager, err := manager.NewPodManager(cli, v1.NamespaceAll, nodeName)
@@ -540,12 +545,6 @@ func NewDownstreamController() (*DownstreamController, error) {
 		return nil, err
 	}
 
-	ml, err := messagelayer.NewMessageLayer()
-	if err != nil {
-		klog.Warningf("create message layer failed with error: %s", err)
-		return nil, err
-	}
-
 	dc := &DownstreamController{
 		kubeClient:       cli,
 		podManager:       podManager,
@@ -554,7 +553,7 @@ func NewDownstreamController() (*DownstreamController, error) {
 		nodeManager:      nodesManager,
 		serviceManager:   serviceManager,
 		endpointsManager: endpointsManager,
-		messageLayer:     ml,
+		messageLayer:     messagelayer.NewContextMessageLayer(),
 		lc:               lc,
 	}
 	if err := dc.initLocating(); err != nil {

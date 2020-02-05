@@ -60,10 +60,10 @@ type UpstreamController struct {
 func (uc *UpstreamController) Start() error {
 	klog.Info("Start upstream devicecontroller")
 
-	uc.deviceStatusChan = make(chan model.Message, config.Get().UpdateDeviceStatusBuffer)
+	uc.deviceStatusChan = make(chan model.Message, config.Get().Buffer.UpdateDeviceStatus)
 	go uc.dispatchMessage()
 
-	for i := 0; i < config.Get().UpdateDeviceStatusWorkers; i++ {
+	for i := 0; i < int(config.Get().Buffer.UpdateDeviceStatus); i++ {
 		go uc.updateDeviceStatus()
 	}
 	return nil
@@ -189,14 +189,20 @@ func (uc *UpstreamController) unmarshalDeviceStatusMessage(msg model.Message) (*
 // NewUpstreamController create UpstreamController from config
 func NewUpstreamController(dc *DownstreamController) (*UpstreamController, error) {
 	config, err := utils.KubeConfig()
-	crdcli, err := utils.NewCRDClient(config)
-	ml, err := messagelayer.NewMessageLayer()
 	if err != nil {
-		klog.Warningf("Create message layer failed with error: %s", err)
+		klog.Warningf("Failed to create kube client: %s", err)
+		return nil, err
 	}
+
+	crdcli, err := utils.NewCRDClient(config)
+	if err != nil {
+		klog.Warningf("Failed to create crd client: %s", err)
+		return nil, err
+	}
+
 	uc := &UpstreamController{
 		crdClient:    crdcli,
-		messageLayer: ml,
+		messageLayer: messagelayer.NewContextMessageLayer(),
 		dc:           dc,
 	}
 	return uc, nil

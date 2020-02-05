@@ -1,24 +1,37 @@
 package cloudhub
 
 import (
+	"os"
+
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog"
+
 	"github.com/kubeedge/beehive/pkg/core"
+	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
+	"github.com/kubeedge/kubeedge/cloud/pkg/client/clientset/versioned"
+	crdinformerfactory "github.com/kubeedge/kubeedge/cloud/pkg/client/informers/externalversions"
 	"github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/channelq"
 	hubconfig "github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/config"
 	"github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/servers"
 	"github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/servers/udsserver"
-	"github.com/kubeedge/viaduct/pkg/api"
+	"github.com/kubeedge/kubeedge/pkg/apis/cloudcore/v1alpha1"
 )
 
 type cloudHub struct {
+	enable bool
 }
 
-func newCloudHub() *cloudHub {
-	return &cloudHub{}
+func newCloudHub(enable bool) *cloudHub {
+	return &cloudHub{
+		enable: enable,
+	}
 }
 
-func Register() {
-	hubconfig.InitConfigure()
-	core.Register(newCloudHub())
+func Register(hub *v1alpha1.CloudHub, kubeAPIConfig *v1alpha1.KubeAPIConfig) {
+	hubconfig.InitConfigure(hub, kubeAPIConfig)
+	core.Register(newCloudHub(hub.Enable))
 }
 
 func (a *cloudHub) Name() string {
@@ -29,26 +42,78 @@ func (a *cloudHub) Group() string {
 	return "cloudhub"
 }
 
+// Enable indicates whether enable this module
+func (a *cloudHub) Enable() bool {
+	return a.enable
+}
+
 func (a *cloudHub) Start() {
-	messageq := channelq.NewChannelMessageQueue()
+	objectSyncController := newObjectSyncController()
+
+	if !cache.WaitForCacheSync(beehiveContext.Done(),
+		objectSyncController.ClusterObjectSyncSynced,
+		objectSyncController.ObjectSyncSynced,
+	) {
+		klog.Errorf("unable to sync caches for objectSyncController")
+		os.Exit(1)
+	}
+
+	messageq := channelq.NewChannelMessageQueue(objectSyncController)
 
 	// start dispatch message from the cloud to edge node
 	go messageq.DispatchMessage()
 
-	// start the cloudhub server
-	if hubconfig.Get().ProtocolWebsocket {
-		// TODO delete second param  @kadisi
-		go servers.StartCloudHub(api.ProtocolTypeWS, hubconfig.Get(), messageq)
-	}
+	servers.StartCloudHub(messageq)
 
-	if hubconfig.Get().ProtocolQuic {
-		// TODO delete second param  @kadisi
-		go servers.StartCloudHub(api.ProtocolTypeQuic, hubconfig.Get(), messageq)
-	}
-
-	if hubconfig.Get().ProtocolUDS {
+	if hubconfig.Get().UnixSocket.Enable {
 		// The uds server is only used to communicate with csi driver from kubeedge on cloud.
 		// It is not used to communicate between cloud and edge.
-		go udsserver.StartServer(hubconfig.Get())
+		go udsserver.StartServer(hubconfig.Get().UnixSocket.Address)
 	}
+}
+
+func newObjectSyncController() *hubconfig.ObjectSyncController {
+	config, err := buildConfig()
+	if err != nil {
+		klog.Errorf("Failed to build config, err: %v", err)
+		os.Exit(1)
+	}
+
+	crdClient := versioned.NewForConfigOrDie(config)
+	crdFactory := crdinformerfactory.NewSharedInformerFactory(crdClient, 0)
+
+	clusterObjectSyncInformer := crdFactory.Reliablesyncs().V1alpha1().ClusterObjectSyncs()
+	objectSyncInformer := crdFactory.Reliablesyncs().V1alpha1().ObjectSyncs()
+
+	sc := &hubconfig.ObjectSyncController{
+		CrdClient: crdClient,
+
+		ClusterObjectSyncInformer: clusterObjectSyncInformer,
+		ObjectSyncInformer:        objectSyncInformer,
+
+		ClusterObjectSyncSynced: clusterObjectSyncInformer.Informer().HasSynced,
+		ObjectSyncSynced:        objectSyncInformer.Informer().HasSynced,
+
+		ClusterObjectSyncLister: clusterObjectSyncInformer.Lister(),
+		ObjectSyncLister:        objectSyncInformer.Lister(),
+	}
+
+	go sc.ClusterObjectSyncInformer.Informer().Run(beehiveContext.Done())
+	go sc.ObjectSyncInformer.Informer().Run(beehiveContext.Done())
+
+	return sc
+}
+
+// build Config from flags
+func buildConfig() (conf *rest.Config, err error) {
+	kubeConfig, err := clientcmd.BuildConfigFromFlags(hubconfig.Get().KubeAPIConfig.Master,
+		hubconfig.Get().KubeAPIConfig.KubeConfig)
+	if err != nil {
+		return nil, err
+	}
+	kubeConfig.QPS = float32(hubconfig.Get().KubeAPIConfig.QPS)
+	kubeConfig.Burst = int(hubconfig.Get().KubeAPIConfig.Burst)
+	kubeConfig.ContentType = "application/json"
+
+	return kubeConfig, nil
 }

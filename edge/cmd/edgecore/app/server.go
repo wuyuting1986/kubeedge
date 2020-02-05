@@ -7,6 +7,7 @@ import (
 
 	"github.com/mitchellh/go-ps"
 	"github.com/spf13/cobra"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apiserver/pkg/util/term"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
@@ -23,6 +24,8 @@ import (
 	"github.com/kubeedge/kubeedge/edge/pkg/servicebus"
 	"github.com/kubeedge/kubeedge/edge/test"
 	edgemesh "github.com/kubeedge/kubeedge/edgemesh/pkg"
+	"github.com/kubeedge/kubeedge/pkg/apis/edgecore/v1alpha1"
+	"github.com/kubeedge/kubeedge/pkg/apis/edgecore/v1alpha1/validation"
 	"github.com/kubeedge/kubeedge/pkg/util/flag"
 	"github.com/kubeedge/kubeedge/pkg/version"
 	"github.com/kubeedge/kubeedge/pkg/version/verflag"
@@ -46,24 +49,47 @@ to/from a lightweight database (SQLite).ServiceBus is a HTTP client to interact 
 offering HTTP client capabilities to components of cloud to reach HTTP servers running at edge. `,
 		Run: func(cmd *cobra.Command, args []string) {
 			verflag.PrintAndExitIfRequested()
+			flag.PrintMinConfigAndExitIfRequested(v1alpha1.NewMinEdgeCoreConfig())
+			flag.PrintDefaultConfigAndExitIfRequested(v1alpha1.NewDefaultEdgeCoreConfig())
 			flag.PrintFlags(cmd.Flags())
+
+			if errs := opts.Validate(); len(errs) > 0 {
+				fmt.Fprintf(os.Stderr, "%v\n", utilerrors.NewAggregate(errs))
+				os.Exit(1)
+			}
+
+			config, err := opts.Config()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				os.Exit(1)
+			}
+
+			if errs := validation.ValidateEdgeCoreConfiguration(config); len(errs) > 0 {
+				fmt.Fprintf(os.Stderr, "%v\n", errs)
+				os.Exit(1)
+			}
 
 			// To help debugging, immediately log version
 			klog.Infof("Version: %+v", version.Get())
 
-			// Check running environment before run edge core
-			if err := environmentCheck(); err != nil {
-				klog.Errorf("Failed to check the running environment: %v", err)
-				os.Exit(1)
+			// Check the running environment by default
+			checkEnv := os.Getenv("CHECK_EDGECORE_ENVIRONMENT")
+			if checkEnv != "false" {
+				// Check running environment before run edge core
+				if err := environmentCheck(); err != nil {
+					klog.Errorf("Failed to check the running environment: %v", err)
+					os.Exit(1)
+				}
 			}
 
-			registerModules()
+			registerModules(config)
 			// start all modules
 			core.Run()
 		},
 	}
 	fs := cmd.Flags()
 	namedFs := opts.Flags()
+	flag.AddFlags(namedFs.FlagSet("global"))
 	verflag.AddFlags(namedFs.FlagSet("global"))
 	globalflag.AddGlobalFlags(namedFs.FlagSet("global"), cmd.Name())
 	for _, f := range namedFs.FlagSets {
@@ -108,28 +134,29 @@ func environmentCheck() error {
 	if find, err := findProcess("kubelet"); err != nil {
 		return err
 	} else if find == true {
-		return errors.New("Kubelet should not running on edge node")
+		return errors.New("Kubelet should not running on edge node when running edgecore")
 	}
 
 	// if kube-proxy is running, return error
 	if find, err := findProcess("kube-proxy"); err != nil {
 		return err
 	} else if find == true {
-		return errors.New("Kube-proxy should not running on edge node")
+		return errors.New("Kube-proxy should not running on edge node when running edgecore")
 	}
 
 	return nil
 }
 
 // registerModules register all the modules started in edgecore
-func registerModules() {
-	devicetwin.Register()
-	edged.Register()
-	edgehub.Register()
-	eventbus.Register()
-	edgemesh.Register()
-	metamanager.Register()
-	servicebus.Register()
-	test.Register()
-	dbm.InitDBManager()
+func registerModules(c *v1alpha1.EdgeCoreConfig) {
+	devicetwin.Register(c.Modules.DeviceTwin, c.Modules.Edged.HostnameOverride)
+	edged.Register(c.Modules.Edged)
+	edgehub.Register(c.Modules.EdgeHub, c.Modules.Edged.HostnameOverride)
+	eventbus.Register(c.Modules.EventBus, c.Modules.Edged.HostnameOverride)
+	edgemesh.Register(c.Modules.EdgeMesh)
+	metamanager.Register(c.Modules.MetaManager)
+	servicebus.Register(c.Modules.ServiceBus)
+	test.Register(c.Modules.DBTest)
+	// Nodte: Need to put it to the end, and wait for all models to register before executing
+	dbm.InitDBConfig(c.DataBase.DriverName, c.DataBase.AliasName, c.DataBase.DataSource)
 }

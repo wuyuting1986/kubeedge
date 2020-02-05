@@ -1,14 +1,17 @@
 language: go
 
+git:
+  depth: false
+
 sudo: required
 
-dist: trusty
+dist: xenial
 
 services:
   - docker
 
 go:
-  - 1.12
+  - 1.13
 
 before_install:
   - |
@@ -22,22 +25,19 @@ install: true
 
 jobs:
   include:
-    - stage: "Verify vendor, gofmt, golint, govet"
-      name: "Verify vendor, gofmt, golint, govet"
+    - stage: "Verify vendor, codegen, gofmt, golint, govet"
+      name: "Verify vendor, codegen, gofmt, golint, govet"
       before_script:
-        - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | BINARY=golangci-lint sh -s -- -d -b $(go env GOPATH)/bin v1.20.0
+        - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | BINARY=golangci-lint sh -s -- -d -b $(go env GOPATH)/bin v1.22.2
         - export GO111MODULE=on
       script:
         - make verify
-        - make cloud_lint
-        - make bluetoothdevice_lint
-        - make keadm_lint
-        - make edge_lint
-
-
+        - make lint
+        
     - stage: "Test on amd64"
       name: "build, smallbuild, crossbuild"
       arch: amd64
+      dist: trusty
       before_script:
         - sudo apt-get install upx-ucl -y
         - sudo apt-get install gcc-arm-linux-gnueabi -y
@@ -50,6 +50,7 @@ jobs:
         - make edge_cross_build_v7
         - make edgesite_cross_build
         - make edgesite_cross_build_v7
+        - make edgesite_small_build
     - name: "unit test, integration test edge"
       arch: amd64
       before_script:
@@ -75,10 +76,10 @@ jobs:
         - make edgesiteimage ARCH="amd64"
         - make bluetoothdevice_image
 
-
     - stage: "Test on arm64"
       name: "build, smallbuild"
       arch: arm64
+      dist: trusty
       before_script:
         - export GOFLAGS=-mod=vendor
         - sudo apt-get install upx-ucl -y
